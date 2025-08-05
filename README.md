@@ -1,4 +1,4 @@
-# Yapping - Binance Alpha Twitter Monitor
+# Binance Alpha Twitter Monitor
 
 A Node.js bot that monitors Binance's Twitter account for Binance Alpha announcements and automatically forwards them to a Telegram channel.
 
