@@ -33,7 +33,7 @@ When a trading open tweet is detected, the bot attempts to find and quote the or
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd Yapping
+   cd alpha-on-fire
    ```
 
 2. **Install dependencies**
