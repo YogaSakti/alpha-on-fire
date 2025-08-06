@@ -9,7 +9,8 @@ const MAX_TWEETS_TO_CHECK = 5; // Reduced to avoid overwhelming the API
 
 const TELEGRAM_CONFIG = {
     channelID: '@',
-    botToken: ''
+    botToken: '',
+    enabled: false  // Set to false to disable Telegram posting
 };
 
 const POSTED_TWEETS_FILE = 'posted_tweets.json';
@@ -19,6 +20,11 @@ let telegramBot = null;
 
 // Initialize Telegram bot
 function initTelegramBot() {
+    if (!TELEGRAM_CONFIG.enabled) {
+        console.log('📴 Telegram integration disabled');
+        return false;
+    }
+    
     try {
         telegramBot = new TelegramBot(TELEGRAM_CONFIG.botToken, { polling: false });
         console.log('✅ Telegram bot initialized');
@@ -155,6 +161,11 @@ ${formattedTradingText}
 
 // Send message to Telegram
 async function sendToTelegram(tweet, originalTweet = null, postedTweets = []) {
+    if (!TELEGRAM_CONFIG.enabled) {
+        console.log('📴 Telegram posting disabled - skipping message');
+        return { success: false, disabled: true };
+    }
+    
     if (!telegramBot) {
         console.log('❌ Telegram bot not initialized');
         return { success: false };
@@ -330,7 +341,7 @@ async function processNewTweets(tweets) {
       screen_name: tweet.screen_name,
       url: tweet.url,
       type: 'announcement',
-      posted_to_telegram: result.success,
+      posted_to_telegram: result.success || result.disabled === true,
       telegram_message_id: result.message_id,
       processed_at: new Date().toISOString()
     };
@@ -372,7 +383,7 @@ async function processNewTweets(tweets) {
         url: tweet.url,
         type: 'trading_open',
         quoted_tweet_id: matchingAnnouncement.id,
-        posted_to_telegram: result.success,
+        posted_to_telegram: result.success || result.disabled === true,
         telegram_message_id: result.message_id,
         processed_at: new Date().toISOString()
       };
@@ -394,7 +405,7 @@ async function processNewTweets(tweets) {
         screen_name: tweet.screen_name,
         url: tweet.url,
         type: 'trading_open_orphan',
-        posted_to_telegram: result.success,
+        posted_to_telegram: result.success || result.disabled === true,
         telegram_message_id: result.message_id,
         processed_at: new Date().toISOString()
       };
@@ -413,12 +424,12 @@ async function processNewTweets(tweets) {
 async function monitorTweets() {
   console.log(`🤖 Starting Binance Alpha Twitter monitor for @${BINANCE_USERNAME}`);
   console.log(`⏱️  Checking every ${POLL_INTERVAL/1000} seconds`);
-  console.log(`📤 Telegram channel: ${TELEGRAM_CONFIG.channelID}`);
+  console.log(`📤 Telegram posting: ${TELEGRAM_CONFIG.enabled ? `enabled - ${TELEGRAM_CONFIG.channelID}` : 'disabled'}`);
   console.log('─'.repeat(80));
 
   // Initialize Telegram bot
   const telegramReady = initTelegramBot();
-  if (!telegramReady) {
+  if (!telegramReady && TELEGRAM_CONFIG.enabled) {
     console.log('⚠️  Continuing without Telegram integration');
   }
 

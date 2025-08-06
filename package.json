@@ -1,13 +1,16 @@
 {
-  "name": "yapping",
+  "name": "alpha-drop-monitor",
   "version": "1.0.0",
-  "description": "",
+  "description": "A specialized Node.js bot that monitors Binance's Twitter account for Binance Alpha airdrop announcements and automatically forwards them to Telegram",
   "license": "ISC",
   "author": "",
   "type": "module",
-  "main": "index.js",
+  "main": "alpha-drop-monitor.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node alpha-drop-monitor.js",
+    "monitor": "node alpha-drop-monitor.js",
+    "legacy": "node index.js"
   },
   "dependencies": {
     "fs": "^0.0.1-security",
