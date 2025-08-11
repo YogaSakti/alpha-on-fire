@@ -3,9 +3,11 @@ import TelegramBot from 'node-telegram-bot-api';
 import fs from 'fs';
 
 // Configuration
-const BINANCE_USERNAME = 'binance';
-const POLL_INTERVAL = 60000; // 60 seconds
-const MAX_TWEETS_TO_CHECK = 10; // Check more tweets for trading opens
+const BINANCE_USERNAME = 'BinanceWallet';
+const POLL_INTERVAL = 60000 * 5; // 5 minutes
+const MAX_TWEETS_TO_CHECK = 10; // Chenk more tweets for trading opens
+
+const EXTRA_SEARCH = 'Binance Alpha Points';
 
 const TELEGRAM_CONFIG = {
     channelID: '@',
@@ -73,6 +75,23 @@ function convertToWIB(timeString) {
     return timeString.includes('WIB') ? timeString : timeString + ' (WIB)';
 }
 
+// Helper: parse "... at HH:MM (TZ)" from tradingTime string
+function parseTimeAndZone(tradingTimeString) {
+    const match = tradingTimeString.match(/at\s+(\d{1,2}:\d{2})\s*\(([^)]+)\)/i);
+    if (!match) return null;
+    return { time: match[1], zone: match[2] };
+}
+
+// Helper: add hours to HH:MM (24h), return HH:MM
+function addHoursToTime(baseTime, hoursToAdd) {
+    const [hh, mm] = baseTime.split(':').map(n => parseInt(n, 10));
+    const totalMinutes = (hh * 60 + mm + (hoursToAdd * 60)) % (24 * 60);
+    const norm = totalMinutes < 0 ? totalMinutes + 24 * 60 : totalMinutes;
+    const nh = Math.floor(norm / 60);
+    const nm = norm % 60;
+    return `${nh.toString().padStart(2, '0')}:${nm.toString().padStart(2, '0')}`;
+}
+
 // Check if tweet is about Alpha trading opening with airdrop
 function isAlphaTradingOpenTweet(tweetText) {
     const text = tweetText.toLowerCase();
@@ -80,24 +99,30 @@ function isAlphaTradingOpenTweet(tweetText) {
     // Must contain Binance Alpha feature announcement
     const hasAlphaFeature = text.includes('binance alpha is the first platform to feature') ||
                            text.includes('binance alpha will be the first platform to feature');
+    // Or a direct now-live announcement
+    const hasNowLive = /\b([^(\n]+)?\s*\([A-Z]{2,10}\)\s+is\s+now\s+live\s+on\s+binance\s+alpha\b/i.test(tweetText) ||
+                       /\b([A-Z]{2,10})\s+is\s+now\s+live\s+on\s+binance\s+alpha\b/i.test(tweetText);
     
     // Must mention trading opening with time
-    const hasTradingOpening = text.includes('trading opening on') && 
+    const hasTradingOpening = (text.includes('trading opening on') || text.includes('trade opens on')) && 
                              (text.includes('at ') || text.includes('utc'));
     
     // Must mention airdrop and points
     const hasAirdrop = text.includes('airdrop') && text.includes('tokens') && 
                       text.includes('binance alpha points');
     
-    return hasAlphaFeature && hasTradingOpening && hasAirdrop;
+    // Accept either classic feature+time format or now-live format
+    return (((hasAlphaFeature && hasTradingOpening) || hasNowLive) && hasAirdrop);
 }
 
 // Enhanced token extraction for trading tweets with airdrop details
 function extractTokenInfo(tweetText) {
     // Look for various patterns in trading tweets
     const patterns = [
+        /([^()]+)\s*\(([^)]+)\)\s+is\s+now\s+live/i,    // "Name (SYMBOL) is now live"
         /feature\s+([^(]+)\s*\(([^)]+)\)/i,           // "feature Token Name (SYMBOL)"
         /feature\s+([A-Z]{2,10})\b/i,                 // "feature SYMBOL"
+        /\b([A-Z]{2,10})\s+is\s+now\s+live/i,          // "SYMBOL is now live"
         /\b([A-Z]{2,10})\s+is\s+now\s+available/i,    // "SYMBOL is now available"
         /\b([A-Z]{2,10})\s+trading/i,                 // "SYMBOL trading"
         /trading\s+([A-Z]{2,10})/i,                   // "trading SYMBOL"
@@ -140,7 +165,10 @@ function extractAirdropInfo(tweetText) {
     };
 
     // Extract token information
-    const tokenMatch = tweetText.match(/feature\s+([^(]+)\s*\(([^)]+)\)/i);
+    let tokenMatch = tweetText.match(/feature\s+([^(]+)\s*\(([^)]+)\)/i);
+    if (!tokenMatch) {
+        tokenMatch = tweetText.match(/([^()]+)\s*\(([^)]+)\)\s+is\s+now\s+live/i);
+    }
     if (tokenMatch) {
         airdropInfo.token = {
             name: tokenMatch[1].trim(),
@@ -148,20 +176,28 @@ function extractAirdropInfo(tweetText) {
         };
     }
 
-    // Extract trading opening time
-    const timeMatch = tweetText.match(/trading opening on (.*?) at (.*?)(?:\.|🌟|Once)/i);
-    if (timeMatch) {
-        // Clean up the date part (remove trailing comma if present)
+    // Extract trading opening time - handle both "trading opening on" and "Trade Opens on" formats
+    let timeMatch = tweetText.match(/trading opening on (.*?) at (.*?)(?:\.|🌟|Once)/i);
+    if (!timeMatch) {
+        // Try the new format: "Trade Opens on DATE TIME (UTC)"
+        timeMatch = tweetText.match(/trade opens on\s+(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s*\(UTC\)/i);
+        if (timeMatch) {
+            const datePart = timeMatch[1].trim();
+            const timePart = convertToWIB(timeMatch[2].trim() + ' (UTC)');
+            airdropInfo.tradingTime = `${datePart} at ${timePart}`;
+        }
+    } else {
+        // Handle old format
         const datePart = timeMatch[1].trim().replace(/,$/, '');
         const timePart = convertToWIB(timeMatch[2].trim());
         airdropInfo.tradingTime = `${datePart} at ${timePart}`;
     }
 
     // Extract airdrop amount
-    const airdropMatch = tweetText.match(/airdrop of\s+(\d+)\s+([A-Z]+)\s+tokens?/i);
+    const airdropMatch = tweetText.match(/airdrop of\s+([\d,]+)\s+([A-Z]+)\s+tokens?/i);
     if (airdropMatch) {
         airdropInfo.airdropAmount = {
-            amount: parseInt(airdropMatch[1]),
+            amount: parseInt(airdropMatch[1].replace(/,/g, '')),
             symbol: airdropMatch[2]
         };
     }
@@ -250,28 +286,83 @@ function formatTradingOpenMessage(tradingTweet) {
     
     // Airdrop amount
     if (airdropInfo.airdropAmount) {
-        message += `🎁 *Airdrop:* ${airdropInfo.airdropAmount.amount} ${airdropInfo.airdropAmount.symbol} tokens\n`;
+        message += `🎁 *Airdrop:* ${airdropInfo.airdropAmount.amount} ${airdropInfo.airdropAmount.symbol}\n`;
     }
     
     // Claim window
     if (airdropInfo.claimWindow) {
-        message += `⏳ *Claim Window:* ${airdropInfo.claimWindow} after trading begins\n`;
+        message += `⏳ *Claim Window:* within ${airdropInfo.claimWindow} once trading begins\n`;
     }
     
     // Points deducted
     if (airdropInfo.pointsDeducted) {
-        message += `💎 *Points Required:* ${airdropInfo.pointsDeducted} Alpha Points (will be deducted)\n\n`;
+        message += `💎 *Points Required:* ${airdropInfo.pointsDeducted} Alpha Points\n\n`;
     }
     
     // Phases
     if (airdropInfo.phases && airdropInfo.phases.length > 0) {
-        message += `� *Airdrop Phases:*\n`;
+        message += `🌟 *Airdrop Phases:*\n`;
+        // Precompute time ranges if trading time exists
+        let phaseTimeRanges = {};
+        if (airdropInfo.tradingTime) {
+            const tzInfo = parseTimeAndZone(airdropInfo.tradingTime);
+            if (tzInfo) {
+                // Try to parse explicit hours from durations
+                const parseHours = (durationStr) => {
+                    const m = durationStr && durationStr.match(/(\d+)\s*hours?/i);
+                    return m ? parseInt(m[1], 10) : null;
+                };
+                const claimWindowMatch = (airdropInfo.claimWindow || '').match(/(\d+)\s*hours?/i);
+                const claimWindowHours = claimWindowMatch ? parseInt(claimWindowMatch[1], 10) : null;
+
+                const phase1 = airdropInfo.phases.find(p => p.phase === 1);
+                const phase2 = airdropInfo.phases.find(p => p.phase === 2);
+
+                const startTime = tzInfo.time;
+                const phase1Hours = phase1 ? parseHours(phase1.duration) : null;
+                if (phase1) {
+                    if (phase1Hours != null) {
+                        const end1 = addHoursToTime(startTime, phase1Hours);
+                        phaseTimeRanges[1] = { start: startTime, end: end1, zone: tzInfo.zone };
+                    } else if (!phase2 && claimWindowHours != null) {
+                        // Single phase without explicit duration: use claim window if available
+                        const end1 = addHoursToTime(startTime, claimWindowHours);
+                        phaseTimeRanges[1] = { start: startTime, end: end1, zone: tzInfo.zone };
+                    } else {
+                        // Fallback: show start time even if we cannot compute end time
+                        phaseTimeRanges[1] = { start: startTime, end: null, zone: tzInfo.zone };
+                    }
+                }
+
+                if (phase2) {
+                    const phase2Hours = parseHours(phase2.duration);
+                    if (phase1Hours != null) {
+                        const start2 = addHoursToTime(startTime, phase1Hours);
+                        const end2 = phase2Hours != null
+                            ? addHoursToTime(start2, phase2Hours)
+                            : (claimWindowHours != null ? addHoursToTime(startTime, claimWindowHours) : null);
+                        if (end2) {
+                            phaseTimeRanges[2] = { start: start2, end: end2, zone: tzInfo.zone };
+                        }
+                    }
+                }
+            }
+        }
+
         airdropInfo.phases.forEach(phase => {
             message += `\n🔸 *Phase ${phase.phase}* (${phase.duration})\n`;
-            message += `   • Min Points: ${phase.minPoints}\n`;
-            message += `   • Type: ${phase.type}\n`;
+            if (phaseTimeRanges[phase.phase]) {
+                const pr = phaseTimeRanges[phase.phase];
+                if (phase.type === 'first-come-first-served' || !pr.end) {
+                    message += `• Time: ${pr.start} (${pr.zone})\n`;
+                } else {
+                    message += `• Time: ${pr.start} - ${pr.end} (${pr.zone})\n`;
+                }
+            }
+            message += `• Min Points: ${phase.minPoints}\n`;
+            message += `• Type: ${phase.type}\n`;
             if (phase.pointReduction) {
-                message += `   • Auto reduction: -${phase.pointReduction} points/hour if not fully claimed\n`;
+                message += `• Auto reduction: -${phase.pointReduction} points/hour\n`;
             }
         });
         message += `\n`;
@@ -329,10 +420,36 @@ async function sendToTelegram(tweet) {
     }
 }
 
-// Get user tweets (same as main file)
-async function getUserTweets(api, username) {
+// get user cookie on cookies.json 
+async function getUserCookie() {
     try {
-        const client = await api.getGuestClient();
+        console.log('🍪 Loading cookies...');
+        const data = fs.readFileSync('cookies.json', 'utf-8');
+        const parsed = JSON.parse(data);
+        const cookie = Object.fromEntries(
+            parsed.filter((e) => ['.twitter.com', '.x.com'].includes(e.domain)).map((e) => [e.name, e.value]),
+        );
+
+        return cookie;
+    } catch (error) {
+        console.error('❌ Error loading cookies:', error.message);
+        return [];
+    }
+}
+
+// Get user tweets (same as main file)
+async function getUserTweets(api, username, extraSearch = EXTRA_SEARCH) {
+    try {
+        const cookies = await getUserCookie();
+        let client;
+
+        if (!cookies.auth_token && !cookies.ct0) {
+            console.log('🔍 Using guest client');
+            client = await api.getGuestClient();
+        } else {
+            console.log('🔍 Using cookies to authenticate');
+            client = await api.getClientFromCookies(cookies);
+        }
         
         console.log(`🔍 Fetching user info for @${username}...`);
         const userResponse = await client.getUserApi().getUserByScreenName({ screenName: username });
@@ -355,9 +472,10 @@ async function getUserTweets(api, username) {
         console.log(`✅ Found @${screenName} (ID: ${userId})`);
 
         console.log(`📱 Fetching tweets for user ID: ${userId}...`);
-        const tweetsResponse = await client.getTweetApi().getUserTweets({ 
-            userId: userId,
-            count: MAX_TWEETS_TO_CHECK 
+        const tweetsResponse = await client.getTweetApi().getSearchTimeline({
+            rawQuery: `(from:${username}) ${extraSearch}`,
+            product: 'Latest',
+            count: MAX_TWEETS_TO_CHECK
         });
 
         if (!tweetsResponse?.data?.data) {
@@ -399,7 +517,7 @@ async function getUserTweets(api, username) {
         return tweets;
 
     } catch (error) {
-        console.error('❌ Error fetching tweets:', error.message);
+        console.error('❌ Error fetching tweets:', error);
         return [];
     }
 }
@@ -422,8 +540,11 @@ async function processTradingOpenTweets(tweets) {
             newTradingTweets.push(tweet);
             continue;
         }
+
+        // previewText no newline
+        const previewText = tweet.text.replace(/\n/g, ' ').substring(0, 50);
         
-        console.log(`⏭️  Skipping non-trading tweet: "${tweet.text.substring(0, 50)}..."`);
+        console.log(`⏭️  Skipping non-trading tweet: "${previewText}..."`);
     }
     
     if (newTradingTweets.length === 0) {
@@ -444,6 +565,19 @@ async function processTradingOpenTweets(tweets) {
         const tokenInfo = airdropInfo.token || extractTokenInfo(tweet.text);
         if (tokenInfo) {
             console.log('🪙 Token:', `${tokenInfo.name} (${tokenInfo.symbol})`);
+        }
+        
+        // Skip if a tweet for this token symbol has already been sent to Telegram
+        const normalizedSymbol = tokenInfo?.symbol ? tokenInfo.symbol.trim().toUpperCase() : null;
+        if (normalizedSymbol) {
+            const alreadySentForSymbol = tradingTweets.some(entry => {
+                const existingSymbol = (entry?.token_info?.symbol || entry?.airdrop_info?.token?.symbol || '').trim().toUpperCase();
+                return existingSymbol === normalizedSymbol && entry?.posted_to_telegram === true;
+            });
+            if (alreadySentForSymbol) {
+                console.log(`⏭️  Airdrop tweet for token ${normalizedSymbol} already sent to Telegram. Skipping.`);
+                continue;
+            }
         }
         
         // console.log('📝 Text:', tweet.text);
@@ -496,6 +630,13 @@ async function monitorTradingTweets() {
     }
 
     const api = new TwitterOpenApi();
+    api.setAdditionalApiHeaders({
+        'sec-ch-ua-platform': '"Windows"',
+    });
+
+    api.setAdditionalApiHeaders({
+        'sec-ch-ua-platform': '"Windows"',
+    });
 
     // Load existing data
     const tradingTweets = loadTradingTweets();
